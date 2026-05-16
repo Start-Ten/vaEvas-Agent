@@ -71,6 +71,3 @@ vaevas_agent/
 - [veriloga-skills](https://github.com/Arcadia-1/veriloga-skills) (for skill injection)
 - [behavioral-veriloga-eval](https://github.com/Arcadia-1/behavioral-veriloga-eval) (for benchmark tasks)
 
-## License
-
-MIT
