@@ -130,8 +130,11 @@ def cmd_list(args) -> None:
         print(f"\n{bold(prefix)}/  ({len(group)} tasks)")
         for t in sorted(group, key=lambda x: x["task_id"]):
             icon = "gold" if t["has_gold"] else ("chk" if t["has_checks"] else "inc")
-            print(f"  {t['task_id']:<40s} {dim(f'{t[\"family\"]:<16s} {t[\"category\"]:<20s} {t[\"difficulty\"]:<8s} {icon}')}")
-    print(f"\n{dim(f'Total: {len(tasks)} tasks across {len(by_prefix)} directories')}")
+            line = f"  {t['task_id']:<40s} {t['family']:<16s} {t['category']:<20s} {t['difficulty']:<8s} {icon}"
+            print(dim(line) if sys.stdout.isatty() else line)
+    total_tasks = len(tasks)
+    total_dirs = len(by_prefix)
+    print(f"\nTotal: {total_tasks} tasks across {total_dirs} directories")
 
 
 def cmd_config(args) -> None:
