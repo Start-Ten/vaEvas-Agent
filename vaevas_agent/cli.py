@@ -56,6 +56,10 @@ def main() -> None:
     p_doctor.add_argument("--fix", action="store_true", help="Auto-fix issues")
     p_doctor.set_defaults(func=cmd_doctor)
 
+    # ── init ──
+    p_init = sub.add_parser("init", help="Interactive first-time setup (onboarding)")
+    p_init.set_defaults(func=cmd_init)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -161,6 +165,136 @@ def cmd_doctor(args) -> None:
     config = load_config()
     dr = Doctor(_make_doctor_config(config))
     sys.exit(dr.run(auto_fix=args.fix))
+
+
+def cmd_init(args) -> None:
+    """Interactive onboarding — configure LLM, detect paths, run doctor."""
+    print()
+    print(bold("vaEvas Agent — First-Time Setup"))
+    print(dim("─" * 50))
+
+    # ── Step 1: LLM Provider ──
+    print(f"\n{bold('Step 1: Choose LLM Provider')}")
+    providers = {
+        "1": ("anthropic",           "Anthropic (Claude) — api.anthropic.com"),
+        "2": ("openai",              "OpenAI (GPT/o-series) — api.openai.com"),
+        "3": ("anthropic-compatible","Anthropic-compatible (DeepSeek, self-hosted, proxies)"),
+        "4": ("openai-compatible",   "OpenAI-compatible (Azure, vLLM, ollama, local)"),
+    }
+    for key, (_, desc) in providers.items():
+        print(f"  [{key}] {desc}")
+    choice = _prompt("Select [1-4]", default="1", choices=list(providers.keys()))
+    provider, _ = providers[choice]
+
+    # ── Step 2: Model ──
+    defaults = {
+        "anthropic": "claude-sonnet-4-6",
+        "openai": "gpt-4o",
+        "anthropic-compatible": "deepseek-v4-flash",
+        "openai-compatible": "gpt-4o",
+    }
+    print(f"\n{bold('Step 2: Model Name')}")
+    print(f"  Press Enter for default: {defaults[provider]}")
+    model = _prompt("Model name", default=defaults[provider])
+
+    # ── Step 3: API Key ──
+    key_env = "ANTHROPIC_API_KEY" if "anthropic" in provider else "OPENAI_API_KEY"
+    existing = os.environ.get(key_env, "")
+    masked = (existing[:8] + "***") if len(existing) > 10 else ("***" if existing else "")
+    print(f"\n{bold('Step 3: API Key')}")
+    print(f"  Will be saved to .env as {key_env}")
+    if existing:
+        print(f"  Current value: {masked}")
+        api_key = _prompt(f"{key_env} (Enter to keep current)", default="")
+        if api_key:
+            _write_env(key_env, api_key)
+        else:
+            print(green(f"  Keeping existing key"))
+    else:
+        api_key = _prompt(f"{key_env}", default="")
+        if api_key:
+            _write_env(key_env, api_key)
+        else:
+            print(yellow("  No key provided — you can add it later in .env"))
+
+    # ── Step 4: Base URL (only for compatible providers) ──
+    base_url = ""
+    if "compatible" in provider:
+        print(f"\n{bold('Step 4: Base URL')}")
+        print(f"  Custom API endpoint for {provider}")
+        base_url = _prompt("Base URL (e.g., https://api.deepseek.com/anthropic)", default="")
+        if base_url:
+            config = load_config()
+            config.llm.base_url = base_url
+            save_config(config, Path.cwd() / "config" / "default.yaml")
+            print(green(f"  base_url set to {base_url}"))
+
+    # ── Step 5: Write config ──
+    print(f"\n{bold('Step 5: Write Configuration')}")
+    config = load_config()
+    config.llm.provider = provider
+    config.llm.model = model
+    config_path = Path.cwd() / "config" / "default.yaml"
+    save_config(config, config_path)
+    print(green(f"  Saved: {config_path}"))
+    print(f"  Provider: {provider}")
+    print(f"  Model: {model}")
+
+    # ── Step 6: Doctor ──
+    print(f"\n{bold('Step 6: Environment Check')}")
+    import os as _os
+    _os.environ[key_env] = _os.environ.get(key_env, api_key or "")
+    dr = Doctor(_make_doctor_config(config))
+    result = dr.run(auto_fix=True)
+    if result == 0:
+        print(f"\n{green('Setup complete! Ready to run:')}")
+        print(f"  {bold('python -m vaevas_agent list')}")
+        print(f"  {bold('python -m vaevas_agent run <task_id>')}")
+    else:
+        print(f"\n{yellow('Some checks failed. Fix remaining issues and re-run:')}")
+        print(f"  {bold('python -m vaevas_agent doctor')}")
+
+
+# ─── Interactive prompt helper ────────────────────────────────
+
+def _prompt(text: str, default: str = "", choices: list[str] | None = None) -> str:
+    """Prompt for user input with optional default and validation."""
+    suffix = f" [{default}]" if default else ""
+    if choices:
+        suffix += f" ({'/'.join(choices)})"
+    while True:
+        try:
+            val = input(f"  {text}{suffix}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        if not val and default:
+            return default
+        if not val:
+            print(red("  Please enter a value"))
+            continue
+        if choices and val not in choices:
+            print(red(f"  Invalid choice. Options: {', '.join(choices)}"))
+            continue
+        return val
+
+
+def _write_env(key: str, value: str) -> None:
+    """Write or update a key in .env file."""
+    env_path = Path(".env")
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines(keepends=True):
+            if line.strip().startswith(f"{key}=") or line.strip().startswith(f"# {key}="):
+                lines.append(f"{key}={value}\n")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}\n")
+    env_path.write_text("".join(lines), encoding="utf-8")
+    print(green(f"  Saved {key} to .env"))
 
 
 # ─── Helpers ─────────────────────────────────────────────────
