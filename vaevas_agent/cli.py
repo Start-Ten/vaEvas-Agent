@@ -228,7 +228,10 @@ def cmd_init(args) -> None:
             config = load_config()
             config.llm.base_url = base_url
             save_config(config, Path.cwd() / "config" / "default.yaml")
+            _write_env("ANTHROPIC_BASE_URL", base_url)
             print(green(f"  base_url set to {base_url}"))
+        if model:
+            _write_env("ANTHROPIC_MODEL", model)
 
     # ── Step 5: Write config ──
     print(f"\n{bold('Step 5: Write Configuration')}")
@@ -243,7 +246,12 @@ def cmd_init(args) -> None:
 
     # ── Step 6: Doctor ──
     print(f"\n{bold('Step 6: Environment Check')}")
+    # Ensure env vars are set for the connectivity check
     os.environ[key_env] = os.environ.get(key_env, api_key or "")
+    if base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = base_url
+    if model:
+        os.environ["ANTHROPIC_MODEL"] = model
     dr = Doctor(_make_doctor_config(config))
     result = dr.run(auto_fix=True)
     if result == 0:

@@ -248,21 +248,28 @@ class Doctor:
         if anthropic_key:
             try:
                 import anthropic
-                client = anthropic.Anthropic(api_key=anthropic_key)
-                # minimal API call to verify key works
+
+                # Use configured model + base_url if available
+                model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+                base_url = os.environ.get("ANTHROPIC_BASE_URL")
+                kwargs = {"api_key": anthropic_key}
+                if base_url:
+                    kwargs["base_url"] = base_url
+
+                client = anthropic.Anthropic(**kwargs)
                 client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=model,
                     max_tokens=1,
                     messages=[{"role": "user", "content": "hi"}],
                 )
                 return CheckResult(
                     name="LLM connectivity", status="pass",
-                    message="anthropic: OK",
+                    message=f"OK (model={model})",
                 )
             except Exception as e:
                 return CheckResult(
                     name="LLM connectivity", status="fail",
-                    message=f"anthropic: {_short_error(e)}",
+                    message=f"{_short_error(e)}",
                     required=False,
                 )
 
