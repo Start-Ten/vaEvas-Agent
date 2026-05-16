@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -242,8 +243,7 @@ def cmd_init(args) -> None:
 
     # ── Step 6: Doctor ──
     print(f"\n{bold('Step 6: Environment Check')}")
-    import os as _os
-    _os.environ[key_env] = _os.environ.get(key_env, api_key or "")
+    os.environ[key_env] = os.environ.get(key_env, api_key or "")
     dr = Doctor(_make_doctor_config(config))
     result = dr.run(auto_fix=True)
     if result == 0:
