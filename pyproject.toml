@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vaevas-agent"
+version = "0.1.0"
+description = "Agent framework for the vaEvas closed-loop Verilog-A generation pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "vaEvas Team" }]
+dependencies = [
+    "evas-sim>=0.4.0",
+    "numpy",
+    "matplotlib",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic"]
+openai = ["openai"]
+dev = ["pytest>=7.0", "pytest-cov"]
+all = ["anthropic", "openai", "pytest>=7.0"]
+
+[project.scripts]
+vaevas-agent = "vaevas_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vaevas_agent*"]

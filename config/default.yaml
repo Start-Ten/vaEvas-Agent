@@ -1,0 +1,39 @@
+# vaEvas Agent default configuration
+# All paths support ~ and environment variable expansion
+
+# --- LLM settings ---
+llm:
+  provider: anthropic                # anthropic | openai
+  model: claude-sonnet-4-6           # default model
+  temperature: 0.0                   # deterministic generation (round 0)
+  repair_temperature: 0.3            # repair rounds (higher for variation)
+  max_tokens: 4096
+  top_p: 1.0
+  timeout: 120                       # API timeout in seconds
+
+# API keys are read from environment variables, not here:
+#   ANTHROPIC_API_KEY  — for anthropic provider
+#   OPENAI_API_KEY     — for openai provider
+
+# --- Repository paths ---
+paths:
+  veriloga_skills: ../veriloga-skills
+  behavioral_eval: ../behavioral-veriloga-eval
+
+# --- Loop settings ---
+loop:
+  max_rounds: 3                      # maximum repair rounds
+  stall_limit: 2                     # consecutive stalled rounds before stop
+  regress_limit: 2                   # consecutive regressed rounds before stop
+
+# --- Skills settings ---
+skills:
+  enabled: true                      # enable skill-based knowledge injection
+  max_chars: 3000                    # max characters per skill injection
+  categories_dir: ../veriloga-skills/veriloga/references/categories
+
+# --- Output ---
+output:
+  dir: ./output                      # default output root
+  save_artifacts: true               # keep generated .va/.scs files
+  save_prompts: true                 # keep generated prompts for debugging
