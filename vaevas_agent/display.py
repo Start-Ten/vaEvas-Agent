@@ -24,7 +24,7 @@ _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"
 def _supports_color() -> bool:
     if not sys.stdout.isatty():
         return False
-    if "NO_COLOR" in sys.environ:
+    if "NO_COLOR" in os.environ:
         return False
     return True
 
