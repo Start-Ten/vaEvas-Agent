@@ -1,11 +1,49 @@
 """Agent configuration — dataclass + YAML loader."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 import yaml
+
+
+def load_env_file(path: Path | str | None = None) -> None:
+    """Load KEY=VALUE pairs from a .env file into os.environ (if key not already set).
+
+    Search order: explicit path > VAEVAS_ENV env var > ./.env
+    Only sets keys that are not already present in the environment.
+    """
+    if path is None:
+        env_var = os.environ.get("VAEVAS_ENV")
+        if env_var:
+            path = Path(env_var)
+        else:
+            path = Path(".env")
+
+    if not isinstance(path, Path):
+        path = Path(path)
+
+    if not path.exists():
+        return
+
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+# Auto-load .env on import
+load_env_file()
 
 
 @dataclass
