@@ -51,12 +51,11 @@ class LoopState:
 
     def add_result(self, result: RoundResult) -> None:
         self.history.append(result)
-        self.current_round = result.round_idx
+        self.current_round = len(self.history)  # next round index
 
         if self.best_result is None:
             self.best_result = result
         elif _result_rank(result) > _result_rank(self.best_result):
-            # Track transition
             result.transition = "improved"
             result.comparison = _compare_results(result, self.best_result)
             self.best_result = result
