@@ -206,17 +206,17 @@ def cmd_init(args) -> None:
     print(f"  Will be saved to .env as {key_env}")
     if existing:
         print(f"  Current value: {masked}")
-        api_key = _prompt(f"{key_env} (Enter to keep current)", default="")
+        api_key = _prompt(f"{key_env} (Enter to keep current)", default="", allow_empty=True)
         if api_key:
             _write_env(key_env, api_key)
         else:
-            print(green(f"  Keeping existing key"))
+            print(green("  Keeping existing key"))
     else:
-        api_key = _prompt(f"{key_env}", default="")
+        api_key = _prompt(f"{key_env}", default="", allow_empty=True)
         if api_key:
             _write_env(key_env, api_key)
         else:
-            print(yellow("  No key provided — you can add it later in .env"))
+            print(yellow("  No key provided - you can add it later in .env"))
 
     # ── Step 4: Base URL (only for compatible providers) ──
     base_url = ""
@@ -265,8 +265,16 @@ def cmd_init(args) -> None:
 
 # ─── Interactive prompt helper ────────────────────────────────
 
-def _prompt(text: str, default: str = "", choices: list[str] | None = None) -> str:
-    """Prompt for user input with optional default and validation."""
+def _prompt(text: str, default: str = "", choices: list[str] | None = None,
+            allow_empty: bool = False) -> str:
+    """Prompt for user input with optional default and validation.
+
+    Args:
+        text: Prompt text.
+        default: Default value if user presses Enter.
+        choices: Valid choices (if provided, input must match one).
+        allow_empty: If True, empty input is accepted as is (returns "").
+    """
     suffix = f" [{default}]" if default else ""
     if choices:
         suffix += f" ({'/'.join(choices)})"
@@ -278,6 +286,8 @@ def _prompt(text: str, default: str = "", choices: list[str] | None = None) -> s
             sys.exit(0)
         if not val and default:
             return default
+        if not val and allow_empty:
+            return ""
         if not val:
             print(red("  Please enter a value"))
             continue

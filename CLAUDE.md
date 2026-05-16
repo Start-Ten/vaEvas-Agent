@@ -10,46 +10,50 @@ LLM generation → EVAS evaluation → diagnosis → targeted repair → repeat 
 Depends on three sibling repos:
 - `EVAS/` — event-driven Verilog-A simulator
 - `behavioral-veriloga-eval/` — benchmark tasks, runners, checkers
-- `veriloga-skills/` — Verilog-A coding knowledge base (SKILL.md + category references)
+- `veriloga-skills/` — Verilog-A coding knowledge base (category references)
 
 ## Architecture
 
 ```
 vaevas_agent/
   agent.py          Agent class — top-level orchestrator
-  cli.py            CLI entry: vaevas-agent run/list/config/doctor
-  config.py         AgentConfig dataclass + YAML loader
-  display.py        Terminal output (spinners, boxes, colors)
-  doctor.py         Environment checker with auto-fix
+  cli.py            CLI: init, run, list, config, doctor
+  config.py         AgentConfig dataclass + YAML loader + .env auto-load
+  display.py        Terminal output (spinners, boxes, colors, ASCII-safe)
+  doctor.py         Environment checker with 10 checks + auto-fix (5 fixable)
   llm/client.py     Anthropic + OpenAI (native + compatible providers)
-  skills/           SkillManager: keyword match → category reference injection
-  loop/             LoopController state machine + LoopState types + Terminator
+  skills/           SkillManager (keyword match -> category injection, 54 keywords)
+  loop/             LoopController state machine + LoopState + Terminator
   prompts/pipeline.py  Prompt assembly (system, task, repair) — central injection logic
 ```
 
 ## Commands
 
 ```bash
-# Install in dev mode
-pip install -e ".[all]"
+# Install
+pip install evas-sim anthropic numpy matplotlib pyyaml
+
+# First-time setup
+python -m vaevas_agent init
 
 # Check environment
 python -m vaevas_agent doctor
 python -m vaevas_agent doctor --fix
 
-# List available tasks
+# List tasks (scans tasks/ + benchmark-v2/tasks/ recursively)
 python -m vaevas_agent list
+python -m vaevas_agent list --family end-to-end
 
-# Run a single task
+# Run a task
 python -m vaevas_agent run digital_basics_smoke --max-rounds 3
 
-# Configure
-python -m vaevas_agent config --set-model claude-sonnet-4-6
-python -m vaevas_agent config --set-provider anthropic-compatible --set-base-url https://my-endpoint/v1
+# Configuration
 python -m vaevas_agent config --show
+python -m vaevas_agent config --set-provider anthropic-compatible
 
-# Run tests
+# Tests
 pytest tests/
+python tests/test_integration.py
 ```
 
 ## LLM Provider Modes
@@ -61,7 +65,15 @@ pytest tests/
 | `openai` | native OpenAI Chat Completions | default |
 | `openai-compatible` | OpenAI Chat Completions at custom endpoint | required |
 
-API keys: set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in environment.
+## .env File
+
+Auto-loaded on import. Set keys:
+```
+ANTHROPIC_API_KEY=sk-xxx
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_MODEL=deepseek-v4-flash
+OPENAI_API_KEY=sk-xxx
+```
 
 ## Prompt Injection Pipeline
 
