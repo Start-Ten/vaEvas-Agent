@@ -20,6 +20,10 @@ from .prompts.pipeline import (
     build_system_prompt,
     build_task_prompt,
 )
+
+import shutil
+import subprocess
+import tempfile
 from .skills.manager import SkillManager
 
 
@@ -281,13 +285,138 @@ def _read_v3_toml_meta(toml_path: Path) -> dict:
     return meta
 
 
+def _run_v3_evas_score(sample_dir: Path, context: TaskContext) -> dict:
+    """Score a v3 task by staging solution + hidden testbench and running EVAS.
+
+    For v3 tasks the scoring pipeline is:
+      1. Copy generated ``.va`` files from *sample_dir* into a staging area.
+      2. Copy the hidden testbench from ``test_hidden/hidden.scs`` (if it
+         exists) or fall back to ``test_visible/visible.scs``.
+      3. Copy any helper ``.va`` files referenced by the testbench from the
+         task ``solution/`` or ``starter/`` directories.
+      4. Run ``evas_simulate`` via the EVAS Python API.
+    """
+    task_dir = context.task_dir
+    evas_output = sample_dir / "evas_output"
+    evas_output.mkdir(parents=True, exist_ok=True)
+
+    # Locate the right testbench: hidden > visible
+    tb_candidates = [
+        task_dir / "test_hidden" / "hidden.scs",
+        task_dir / "test_visible" / "visible.scs",
+    ]
+    tb_path = None
+    for c in tb_candidates:
+        if c.exists():
+            tb_path = c
+            break
+    if tb_path is None:
+        return {
+            "status": "FAIL_INFRA",
+            "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                      "sim_correct": 0.0, "weighted_total": 0.0},
+            "evas_notes": ["no testbench found (test_hidden/hidden.scs or test_visible/visible.scs)"],
+        }
+
+    # Stage all files in a temp directory
+    with tempfile.TemporaryDirectory(prefix=f"v3score_{context.task_id}_") as tmp:
+        tmp_path = Path(tmp)
+
+        # 1. Copy generated .va files
+        va_files = sorted(sample_dir.glob("*.va"))
+        for f in va_files:
+            shutil.copy2(f, tmp_path / f.name)
+
+        # 2. Copy the testbench
+        shutil.copy2(tb_path, tmp_path / tb_path.name)
+
+        # 3. Copy any helper .va files referenced by the testbench
+        #    (search task solution/ and starter/ as fallback)
+        tb_text = tb_path.read_text(encoding="utf-8", errors="ignore")
+        import re
+        for match in re.finditer(r'ahdl_include\s+"([^"]+)"', tb_text):
+            inc_name = match.group(1)
+            inc_path = tmp_path / inc_name
+            if inc_path.exists():
+                continue
+            # Search solution/, starter/, and test dirs
+            for search_dir in [task_dir / "solution", task_dir / "starter",
+                               task_dir / "test_visible", task_dir / "test_hidden"]:
+                candidate = search_dir / inc_name
+                if candidate.exists():
+                    shutil.copy2(candidate, inc_path)
+                    break
+                # Also search subdirectories
+                for found in sorted(search_dir.rglob(inc_name)):
+                    shutil.copy2(found, inc_path)
+                    break
+                if inc_path.exists():
+                    break
+
+        # 4. Run EVAS simulation
+        scs_path = tmp_path / tb_path.name
+        try:
+            from evas.netlist.runner import evas_simulate
+            sim_ok = evas_simulate(str(scs_path), output_dir=str(evas_output))
+        except ImportError:
+            # Fallback: evas CLI
+            try:
+                proc = subprocess.run(
+                    ["evas", "simulate", str(scs_path), "-o", str(evas_output)],
+                    capture_output=True, text=True, timeout=180, cwd=str(tmp_path),
+                )
+                sim_ok = proc.returncode == 0
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "FAIL_INFRA",
+                    "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                              "sim_correct": 0.0, "weighted_total": 0.0},
+                    "evas_notes": ["evas timeout"],
+                }
+            except FileNotFoundError:
+                return {
+                    "status": "FAIL_INFRA",
+                    "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                              "sim_correct": 0.0, "weighted_total": 0.0},
+                    "evas_notes": ["evas CLI not found"],
+                }
+
+        if sim_ok:
+            return {
+                "status": "PASS",
+                "scores": {"dut_compile": 1.0, "tb_compile": 1.0,
+                          "sim_correct": 1.0, "weighted_total": 1.0},
+                "evas_notes": ["v3 EVAS simulation succeeded (basic pass)"],
+            }
+        else:
+            return {
+                "status": "FAIL_DUT_COMPILE",
+                "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                          "sim_correct": 0.0, "weighted_total": 0.0},
+                "evas_notes": ["v3 EVAS simulation failed"],
+            }
+
+
 def _run_evas_score(sample_dir: Path, context: TaskContext) -> dict:
     """Run EVAS evaluation for the generated candidate.
 
-    Tries to import and use the full score_one_task from behavioral-veriloga-eval.
-    Falls back to a minimal evas CLI invocation.
+    Tries v3 scoring first (``task.toml``-based), then the full
+    ``score_one_task`` pipeline from behavioral-veriloga-eval, then
+    a minimal ``evas simulate`` CLI invocation as last resort.
     """
-    # Try the full scoring pipeline first
+    # ── v3 scoring path ────────────────────────────────────
+    if (context.task_dir / "task.toml").exists():
+        try:
+            return _run_v3_evas_score(sample_dir, context)
+        except Exception as e:
+            return {
+                "status": "FAIL_INFRA",
+                "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                          "sim_correct": 0.0, "weighted_total": 0.0},
+                "evas_notes": [f"v3 score error: {e}"],
+            }
+
+    # ── v1 scoring: try score_one_task ─────────────────────
     try:
         # Add behavioral-veriloga-eval to path
         eval_root = sample_dir.parent.parent.parent  # heuristic
