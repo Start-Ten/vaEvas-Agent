@@ -229,6 +229,20 @@ def _build_task_context(task_id: str, task_dir: Path) -> TaskContext:
     required_axes = meta.get("scoring", ["dut_compile", "tb_compile", "sim_correct"])
     gold_dir = _resolve_gold_path(task_dir)
 
+    # v3 task: read task.toml for metadata
+    if not meta_path.exists():
+        toml_path = task_dir / "task.toml"
+        if toml_path.exists():
+            v3_meta = _read_v3_toml_meta(toml_path)
+            family = v3_meta.get("family", family)
+            category = v3_meta.get("category", category)
+            required_axes = v3_meta.get("scoring", required_axes)
+            # v3 uses solution/ as gold
+            if gold_dir is None:
+                sol_dir = task_dir / "solution"
+                if sol_dir.is_dir():
+                    gold_dir = sol_dir
+
     return TaskContext(
         task_id=task_id,
         task_dir=task_dir,
@@ -238,6 +252,33 @@ def _build_task_context(task_id: str, task_dir: Path) -> TaskContext:
         required_axes=required_axes,
         gold_dir=gold_dir,
     )
+
+
+def _read_v3_toml_meta(toml_path: Path) -> dict:
+    """Parse basic metadata from a v3 task.toml file."""
+    meta: dict = {}
+    form_map = {"dut": "spec-to-va", "bugfix": "bugfix",
+                "tb": "tb-generation", "e2e": "end-to-end"}
+    try:
+        for line in toml_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("["):
+                continue
+            if "=" not in s:
+                continue
+            k, _, v = s.partition("=")
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k == "form":
+                meta["family"] = form_map.get(v, "spec-to-va")
+            elif k == "category":
+                meta["category"] = v
+            elif k == "difficulty":
+                meta["difficulty"] = v
+            elif k == "level":
+                meta["level"] = v
+    except (OSError, UnicodeDecodeError):
+        pass
+    return meta
 
 
 def _run_evas_score(sample_dir: Path, context: TaskContext) -> dict:

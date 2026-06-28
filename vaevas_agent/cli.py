@@ -318,10 +318,15 @@ def _write_env(key: str, value: str) -> None:
 # ─── Helpers ─────────────────────────────────────────────────
 
 def _find_task_dir(task_id: str, task_root_override: str | None, config: AgentConfig) -> Path | None:
-    """Locate the best task directory by task_id."""
+    """Locate the best task directory by task_id.
+
+    Supports both v1 (``meta.json``) and v3 (``task.toml``) task formats.
+    """
     root = _resolve_eval_root(task_root_override, config)
     if root is None:
         return None
+
+    # Search v1-style: meta.json files
     for meta_path in sorted(root.rglob("meta.json")):
         task_dir = meta_path.parent
         resolved = _resolve_task_dir(task_dir, root)
@@ -334,7 +339,46 @@ def _find_task_dir(task_id: str, task_root_override: str | None, config: AgentCo
             tid = task_dir.name
         if tid == task_id:
             return resolved
+
+    # Search v3-style: task.toml files
+    for toml_path in sorted(root.rglob("task.toml")):
+        task_dir = toml_path.parent
+        resolved = _resolve_v3_task_dir(task_dir, root)
+        if resolved is None:
+            continue
+        tid = _read_v3_task_id(toml_path, task_dir.name)
+        if tid == task_id:
+            return resolved
+
     return None
+
+
+def _read_v3_task_id(toml_path: Path, fallback: str) -> str:
+    """Extract task ID from a v3 task.toml file."""
+    try:
+        for line in toml_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("id") and "=" in line:
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
+            if line.startswith("name") and "=" in line:
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
+    except (OSError, UnicodeDecodeError):
+        pass
+    return fallback
+
+
+def _resolve_v3_task_dir(task_dir: Path, root: Path) -> Path | None:
+    """Check if *task_dir* is a valid v3 task directory."""
+    has_solution = (task_dir / "solution").is_dir()
+    has_checks = (task_dir / "test_harness" / "checks.yaml").exists()
+    has_instruction = (task_dir / "instruction.md").exists()
+    if not (has_solution or has_checks):
+        return None
+    return task_dir
 
 
 def _resolve_task_dir(task_dir: Path, root: Path) -> Path | None:
@@ -383,12 +427,13 @@ def _scan_all_tasks(root: Path) -> list[dict]:
     """Scan eval repo root for all benchmark tasks with complete files.
 
     Returns list of {task_id, family, category, difficulty, path, has_gold}.
-    A task is considered "complete" if it has meta.json AND (gold/ directory or checks.yaml).
-    For ``hidden/``-style variants, task_dir is promoted to the parent that
-    has ``prompt.md`` and the full ``gold/`` directory.
+    Supports both v1 (``meta.json`` + ``gold/``) and v3 (``task.toml`` + ``solution/``)
+    task formats.
     """
     tasks = []
-    seen_ids: set[str] = set()  # avoid dupes when hidden/ promotes to same parent
+    seen_ids: set[str] = set()
+
+    # v1 tasks: meta.json
     for meta_path in sorted(root.rglob("meta.json")):
         task_dir = meta_path.parent
         resolved = _resolve_task_dir(task_dir, root)
@@ -409,12 +454,10 @@ def _scan_all_tasks(root: Path) -> list[dict]:
         category = meta.get("category", "unknown")
         difficulty = meta.get("difficulty", "?")
 
-        # Avoid duplicate entries (multiple meta.jsons resolving to same dir)
         if tid in seen_ids:
             continue
         seen_ids.add(tid)
 
-        # Determine a display prefix from the relative path
         rel = resolved.relative_to(root)
         prefix = str(rel.parent) if rel.parent != Path(".") else ""
 
@@ -429,6 +472,61 @@ def _scan_all_tasks(root: Path) -> list[dict]:
             "has_checks": has_checks,
             "has_prompt": has_prompt,
         })
+
+    # v3 tasks: task.toml
+    for toml_path in sorted(root.rglob("task.toml")):
+        task_dir = toml_path.parent
+        resolved = _resolve_v3_task_dir(task_dir, root)
+        if resolved is None:
+            continue
+
+        tid = _read_v3_task_id(toml_path, task_dir.name)
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+
+        # Read metadata from task.toml
+        family = "spec-to-va"
+        category = "unknown"
+        difficulty = "?"
+        try:
+            for line in toml_path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s.startswith("form") and "=" in s:
+                    form_map = {"dut": "spec-to-va", "bugfix": "bugfix",
+                                "tb": "tb-generation", "e2e": "end-to-end"}
+                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                    family = form_map.get(val, "spec-to-va")
+                elif s.startswith("category") and "=" in s:
+                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        category = val
+                elif s.startswith("difficulty") and "=" in s:
+                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        difficulty = val
+        except Exception:
+            pass
+
+        has_solution = (resolved / "solution").is_dir()
+        has_checks = (resolved / "test_harness" / "checks.yaml").exists()
+        has_instruction = (resolved / "instruction.md").exists()
+
+        rel = resolved.relative_to(root)
+        prefix = str(rel.parent) if rel.parent != Path(".") else ""
+
+        tasks.append({
+            "task_id": tid,
+            "family": family,
+            "category": category,
+            "difficulty": difficulty,
+            "path": resolved,
+            "prefix": prefix,
+            "has_gold": has_solution,
+            "has_checks": has_checks,
+            "has_prompt": has_instruction,
+        })
+
     return tasks
 
 

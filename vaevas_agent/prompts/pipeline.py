@@ -488,10 +488,16 @@ def _resolve_gold_path(task_dir: Path) -> Path | None:
     Some benchmark tasks place gold files in a parent directory (e.g.,
     ``forms/dut/gold/``) while ``meta.json`` lives in ``forms/dut/hidden/``.
     This helper returns the first ``gold/`` found by walking up the tree.
+
+    For v3 tasks, falls back to ``solution/``.
     """
     candidate = task_dir / "gold"
     if candidate.exists():
         return candidate
+    # v3 fallback: solution/
+    sol = task_dir / "solution"
+    if sol.is_dir():
+        return sol
     for parent in task_dir.parents:
         candidate = parent / "gold"
         if candidate.exists():
@@ -503,7 +509,8 @@ def _resolve_gold_path(task_dir: Path) -> Path | None:
 
 
 def _read_prompt_md(task_dir: Path) -> str:
-    """Read prompt.md from task_dir, falling back to parent directories.
+    """Read prompt.md from task_dir, falling back to parent directories
+    (v1 ``hidden/`` variants) or to ``instruction.md`` (v3 tasks).
 
     Some benchmark tasks are in a ``hidden/`` subdirectory (e.g.,
     ``forms/dut/hidden/``) while prompt.md lives one level up
@@ -512,6 +519,10 @@ def _read_prompt_md(task_dir: Path) -> str:
     prompt_path = task_dir / "prompt.md"
     if prompt_path.exists():
         return prompt_path.read_text(encoding="utf-8")
+    # v3 fallback: instruction.md
+    instruction_path = task_dir / "instruction.md"
+    if instruction_path.exists():
+        return instruction_path.read_text(encoding="utf-8")
     # Walk up looking for prompt.md (handles hidden/ subdirectories)
     for parent in task_dir.parents:
         candidate = parent / "prompt.md"
