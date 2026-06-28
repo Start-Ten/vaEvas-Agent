@@ -300,7 +300,7 @@ def _run_v3_evas_score(sample_dir: Path, context: TaskContext) -> dict:
     evas_output = sample_dir / "evas_output"
     evas_output.mkdir(parents=True, exist_ok=True)
 
-    # Locate the right testbench: hidden > visible
+    # Locate the right testbench: hidden > visible > tests subdirs
     tb_candidates = [
         task_dir / "test_hidden" / "hidden.scs",
         task_dir / "test_visible" / "visible.scs",
@@ -310,6 +310,13 @@ def _run_v3_evas_score(sample_dir: Path, context: TaskContext) -> dict:
         if c.exists():
             tb_path = c
             break
+    # Fallback: search tests/ subdirectories for any .scs file
+    if tb_path is None:
+        for subdir in ["test_hidden", "test_visible"]:
+            scs_files = sorted((task_dir / subdir).rglob("*.scs"))
+            if scs_files:
+                tb_path = scs_files[0]
+                break
     if tb_path is None:
         return {
             "status": "FAIL_INFRA",
