@@ -48,28 +48,37 @@ class LoopController:
             # Step 1: Generate/Repair
             sample_dir = self._make_sample_dir(context.task_id, round_idx)
 
-            if round_idx == 0:
-                # Initial generation
-                result = generate_fn(round_idx, context, iteration_context)
-            else:
-                # Repair: build prompt from previous failure
-                last = state.last_result()
-                if last is None:
-                    break
-                evas_result = {
-                    "status": last.status,
-                    "scores": last.scores,
-                    "evas_notes": last.evas_notes,
+            try:
+                if round_idx == 0:
+                    # Initial generation
+                    result = generate_fn(round_idx, context, iteration_context)
+                else:
+                    # Repair: build prompt from previous failure
+                    last = state.last_result()
+                    if last is None:
+                        break
+                    evas_result = {
+                        "status": last.status,
+                        "scores": last.scores,
+                        "evas_notes": last.evas_notes,
+                    }
+                    history_dicts = [
+                        {"round": r.round_idx, "status": r.status,
+                         "scores": r.scores, "transition": r.transition}
+                        for r in state.history
+                    ]
+                    repair_prompt = repair_fn(context.task_dir, last.sample_dir,
+                                             evas_result, history_dicts)
+                    iteration_context["repair_prompt"] = repair_prompt
+                    result = generate_fn(round_idx, context, iteration_context)
+            except Exception as e:
+                result = {
+                    "response_text": "",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "elapsed_ms": 0,
+                    "error": f"generate callback failed: {e}",
                 }
-                history_dicts = [
-                    {"round": r.round_idx, "status": r.status,
-                     "scores": r.scores, "transition": r.transition}
-                    for r in state.history
-                ]
-                repair_prompt = repair_fn(context.task_dir, last.sample_dir,
-                                         evas_result, history_dicts)
-                iteration_context["repair_prompt"] = repair_prompt
-                result = generate_fn(round_idx, context, iteration_context)
 
             # Write generated files to sample_dir
             _save_generated_files(result, sample_dir)
@@ -78,7 +87,15 @@ class LoopController:
             if on_round_start:
                 on_round_start(round_idx, "evaluating")
 
-            evas_result = evaluate_fn(sample_dir, context)
+            try:
+                evas_result = evaluate_fn(sample_dir, context)
+            except Exception as e:
+                evas_result = {
+                    "status": "FAIL_INFRA",
+                    "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                              "sim_correct": 0.0, "weighted_total": 0.0},
+                    "evas_notes": [f"evaluate callback failed: {e}"],
+                }
 
             # Step 3: Diagnose + update state
             round_result = _build_round_result(round_idx, sample_dir, evas_result, result)
@@ -112,11 +129,17 @@ def _save_generated_files(result, sample_dir: Path) -> None:
 
     for i, code in enumerate(va_blocks):
         module_name = _infer_module_name(code) or f"module_{i}"
-        (sample_dir / f"{module_name}.va").write_text(code, encoding="utf-8")
+        try:
+            (sample_dir / f"{module_name}.va").write_text(code, encoding="utf-8")
+        except OSError:
+            pass  # best-effort write
 
     for i, code in enumerate(scs_blocks):
         tb_name = _infer_tb_name(code) or f"tb_generated_{i}"
-        (sample_dir / f"{tb_name}.scs").write_text(code, encoding="utf-8")
+        try:
+            (sample_dir / f"{tb_name}.scs").write_text(code, encoding="utf-8")
+        except OSError:
+            pass  # best-effort write
 
 
 def _extract_code_blocks(text: str, lang: str) -> list[str]:

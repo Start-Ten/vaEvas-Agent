@@ -92,12 +92,15 @@ Choose the module boundary from the public task contract:
 """
 
     # --- Layer 3: Gold-derived contracts ---
-    gold_dir = task_dir / "gold"
+    gold_dir = _resolve_gold_path(task_dir)
     gold_tb_text = ""
-    if gold_dir.exists() and family in ("spec-to-va", "bugfix", "end-to-end"):
-        gold_tb = _find_gold_tb(gold_dir)
+    if gold_dir and family in ("spec-to-va", "bugfix", "end-to-end"):
+        gold_tb = _find_gold_tb(gold_dir, task_dir)
         if gold_tb:
-            gold_tb_text = gold_tb.read_text(encoding="utf-8", errors="ignore")
+            try:
+                gold_tb_text = gold_tb.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                gold_tb_text = ""
 
     if gold_tb_text and family in ("spec-to-va", "bugfix", "end-to-end"):
         prompt_md += _inject_evas_validation_contract(gold_tb_text)
@@ -285,13 +288,16 @@ def _inject_module_name_contract(family: str, task_dir: Path, gold_tb_text: str,
 
 def _inject_dut_contract(task_dir: Path) -> str:
     """For tb-generation: inject gold DUT interface contract."""
-    gold_dir = task_dir / "gold"
-    if not gold_dir.exists():
+    gold_dir = _resolve_gold_path(task_dir)
+    if not gold_dir:
         return ""
 
     parts = ["\n## DUT Contract — MUST follow exactly\n"]
     for va_file in sorted(gold_dir.glob("*.va")):
-        text = va_file.read_text(encoding="utf-8", errors="ignore")
+        try:
+            text = va_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
         mod_match = re.search(r'\bmodule\s+(\w+)\s*\(([^)]*)\)\s*;', text, re.DOTALL)
         if not mod_match:
             continue
@@ -333,13 +339,16 @@ def _inject_public_behavior_contract(task_dir: Path) -> str:
 
 def _inject_csv_observable_contract(task_dir: Path) -> str:
     """Extract required CSV columns from the gold TB's save statement."""
-    gold_dir = task_dir / "gold"
-    if not gold_dir.exists():
+    gold_dir = _resolve_gold_path(task_dir)
+    if not gold_dir:
         return ""
-    gold_tb = _find_gold_tb(gold_dir)
+    gold_tb = _find_gold_tb(gold_dir, task_dir)
     if not gold_tb:
         return ""
-    text = gold_tb.read_text(encoding="utf-8", errors="ignore")
+    try:
+        text = gold_tb.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
     save_signals = _extract_save_signals(text)
     if not save_signals:
         return ""
@@ -462,17 +471,55 @@ def _loop_progress(history: list[dict], current_status: str) -> str:
 # ─── Utility helpers ─────────────────────────────────────────
 
 def _read_meta(task_dir: Path) -> dict:
+    """Read and parse meta.json, returning {} on any error."""
     import json
     meta_path = task_dir / "meta.json"
-    if meta_path.exists():
+    if not meta_path.exists():
+        return {}
+    try:
         return json.loads(meta_path.read_text(encoding="utf-8"))
-    return {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+
+
+def _resolve_gold_path(task_dir: Path) -> Path | None:
+    """Resolve the ``gold/`` directory, walking up for ``hidden/`` variants.
+
+    Some benchmark tasks place gold files in a parent directory (e.g.,
+    ``forms/dut/gold/``) while ``meta.json`` lives in ``forms/dut/hidden/``.
+    This helper returns the first ``gold/`` found by walking up the tree.
+    """
+    candidate = task_dir / "gold"
+    if candidate.exists():
+        return candidate
+    for parent in task_dir.parents:
+        candidate = parent / "gold"
+        if candidate.exists():
+            return candidate
+        # Stop at eval repo root
+        if (parent / ".git").exists() or (parent / "schemas").exists():
+            break
+    return None
 
 
 def _read_prompt_md(task_dir: Path) -> str:
+    """Read prompt.md from task_dir, falling back to parent directories.
+
+    Some benchmark tasks are in a ``hidden/`` subdirectory (e.g.,
+    ``forms/dut/hidden/``) while prompt.md lives one level up
+    (``forms/dut/prompt.md``).  Walk up the tree to find it.
+    """
     prompt_path = task_dir / "prompt.md"
     if prompt_path.exists():
         return prompt_path.read_text(encoding="utf-8")
+    # Walk up looking for prompt.md (handles hidden/ subdirectories)
+    for parent in task_dir.parents:
+        candidate = parent / "prompt.md"
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+        # Stop at the eval repo root (has .git or schemas/)
+        if (parent / ".git").exists() or (parent / "schemas").exists():
+            break
     return ""
 
 
@@ -486,12 +533,26 @@ def _read_buggy_dut(task_dir: Path) -> str | None:
     return None
 
 
-def _find_gold_tb(gold_dir: Path) -> Path | None:
+def _find_gold_tb(gold_dir: Path, task_dir: Path | None = None) -> Path | None:
+    """Return the gold testbench inside *gold_dir*, falling back to parent gold dirs.
+
+    When *gold_dir* has a ``.va`` file but no ``.scs`` testbench (common in
+    ``hidden/`` variants), walks up the task tree to find a parent ``gold/``
+    that contains the testbench.
+    """
     preferred = sorted(gold_dir.glob("tb*_ref.scs"))
     if preferred:
         return preferred[0]
     fallback = sorted(gold_dir.glob("tb*.scs"))
-    return fallback[0] if fallback else None
+    if fallback:
+        return fallback[0]
+    # No .scs in this gold_dir — walk up to find a parent gold with one.
+    if task_dir is None:
+        return None
+    parent_gold = _resolve_gold_path(task_dir.parent) if task_dir.parent != task_dir else None
+    if parent_gold and parent_gold != gold_dir:
+        return _find_gold_tb(parent_gold, task_dir.parent)
+    return None
 
 
 def _extract_save_signals(tb_text: str) -> list[str]:
@@ -523,9 +584,15 @@ def _format_scores(scores: dict) -> str:
 def _read_candidate_files(sample_dir: Path) -> str:
     parts = []
     for f in sorted(sample_dir.glob("*.va")):
-        content = f.read_text(encoding="utf-8", errors="ignore")
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
         parts.append(f"```verilog-a\n{content}\n```")
     for f in sorted(sample_dir.glob("*.scs")):
-        content = f.read_text(encoding="utf-8", errors="ignore")
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
         parts.append(f"```spectre\n{content}\n```")
     return "\n\n".join(parts) if parts else "  (no candidate files found)"

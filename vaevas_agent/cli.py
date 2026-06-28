@@ -318,13 +318,14 @@ def _write_env(key: str, value: str) -> None:
 # ─── Helpers ─────────────────────────────────────────────────
 
 def _find_task_dir(task_id: str, task_root_override: str | None, config: AgentConfig) -> Path | None:
+    """Locate the best task directory by task_id."""
     root = _resolve_eval_root(task_root_override, config)
     if root is None:
         return None
     for meta_path in sorted(root.rglob("meta.json")):
-        # Skip meta.json not belonging to a benchmark task (must have gold/ or checks.yaml)
         task_dir = meta_path.parent
-        if not ((task_dir / "gold").is_dir() or (task_dir / "checks.yaml").exists()):
+        resolved = _resolve_task_dir(task_dir, root)
+        if resolved is None:
             continue
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -332,8 +333,32 @@ def _find_task_dir(task_id: str, task_root_override: str | None, config: AgentCo
         except Exception:
             tid = task_dir.name
         if tid == task_id:
-            return task_dir
+            return resolved
     return None
+
+
+def _resolve_task_dir(task_dir: Path, root: Path) -> Path | None:
+    """Resolve a task directory, promoting ``hidden/`` variants to their parent.
+
+    Some benchmark tasks store ``prompt.md`` and a complete ``gold/`` in
+    the parent directory (e.g. ``forms/dut/``) while the ``meta.json``
+    lives in a ``hidden/`` subdirectory.  This helper walks up to find
+    the directory that has the full task assets so that EVAS scoring and
+    prompt-building work correctly.
+    """
+    if not ((task_dir / "gold").is_dir() or (task_dir / "checks.yaml").exists()):
+        return None
+    # If this task_dir is complete (has prompt + gold), use it directly.
+    if (task_dir / "prompt.md").exists() and (task_dir / "gold").is_dir():
+        return task_dir
+    # Otherwise walk up looking for a parent with the full task assets.
+    for parent in task_dir.parents:
+        if parent == root:
+            break
+        if (parent / "prompt.md").exists() and (parent / "gold").is_dir():
+            return parent
+    # Return the original directory as a fallback (it has at least gold/ or checks.yaml).
+    return task_dir
 
 
 def _resolve_eval_root(override: str | None, config: AgentConfig) -> Path | None:
@@ -359,16 +384,20 @@ def _scan_all_tasks(root: Path) -> list[dict]:
 
     Returns list of {task_id, family, category, difficulty, path, has_gold}.
     A task is considered "complete" if it has meta.json AND (gold/ directory or checks.yaml).
+    For ``hidden/``-style variants, task_dir is promoted to the parent that
+    has ``prompt.md`` and the full ``gold/`` directory.
     """
     tasks = []
+    seen_ids: set[str] = set()  # avoid dupes when hidden/ promotes to same parent
     for meta_path in sorted(root.rglob("meta.json")):
         task_dir = meta_path.parent
-        has_gold = (task_dir / "gold").is_dir()
-        has_checks = (task_dir / "checks.yaml").exists()
-        has_prompt = (task_dir / "prompt.md").exists()
+        resolved = _resolve_task_dir(task_dir, root)
+        if resolved is None:
+            continue
 
-        if not has_gold and not has_checks:
-            continue  # incomplete task, skip
+        has_gold = (resolved / "gold").is_dir()
+        has_checks = (resolved / "checks.yaml").exists()
+        has_prompt = (resolved / "prompt.md").exists()
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -380,8 +409,13 @@ def _scan_all_tasks(root: Path) -> list[dict]:
         category = meta.get("category", "unknown")
         difficulty = meta.get("difficulty", "?")
 
+        # Avoid duplicate entries (multiple meta.jsons resolving to same dir)
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+
         # Determine a display prefix from the relative path
-        rel = task_dir.relative_to(root)
+        rel = resolved.relative_to(root)
         prefix = str(rel.parent) if rel.parent != Path(".") else ""
 
         tasks.append({
@@ -389,7 +423,7 @@ def _scan_all_tasks(root: Path) -> list[dict]:
             "family": family,
             "category": category,
             "difficulty": difficulty,
-            "path": task_dir,
+            "path": resolved,
             "prefix": prefix,
             "has_gold": has_gold,
             "has_checks": has_checks,

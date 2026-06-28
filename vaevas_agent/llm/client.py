@@ -51,6 +51,28 @@ def _resolve_api_key(config: LLMConfig) -> str:
     return api_key
 
 
+# ─── Retry helper ──────────────────────────────────────────────
+
+def _retry_call(fn, max_attempts: int = 3, base_delay: float = 1.0) -> any:
+    """Call *fn* with exponential-backoff retry.
+
+    Retries on ``LLMError`` up to *max_attempts* times with
+    ``base_delay * 2 ** attempt`` seconds between attempts.
+    The first attempt is immediate.  If all attempts fail the last
+    ``LLMError`` is re-raised.
+    """
+    last_exc: LLMError | None = None
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            delay = base_delay * (2 ** (attempt - 1))
+            time.sleep(delay)
+        try:
+            return fn()
+        except LLMError as e:
+            last_exc = e
+    raise last_exc  # type: ignore[misc]
+
+
 # ─── Anthropic (native + compatible) ─────────────────────────
 
 def _call_anthropic(
@@ -74,14 +96,17 @@ def _call_anthropic(
     client = anthropic.Anthropic(**kwargs)
 
     t0 = time.perf_counter()
-    message = client.messages.create(
-        model=config.model,
-        max_tokens=config.max_tokens,
-        temperature=temperature,
-        top_p=config.top_p,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
+    try:
+        message = client.messages.create(
+            model=config.model,
+            max_tokens=config.max_tokens,
+            temperature=temperature,
+            top_p=config.top_p,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+    except anthropic.APIError as e:
+        raise LLMError(f"Anthropic API error: {e}") from e
     elapsed = (time.perf_counter() - t0) * 1000
 
     # Collect text from TextBlock and ThinkingBlock content blocks.
@@ -134,42 +159,44 @@ def _call_openai(
     client = openai.OpenAI(**kwargs)
 
     t0 = time.perf_counter()
-
-    if use_responses_api and not config.base_url:
-        # Responses API only works with native OpenAI (no custom base_url)
-        response = client.responses.create(
-            model=config.model,
-            instructions=system,
-            input=user,
-            temperature=temperature,
-            max_output_tokens=config.max_tokens,
-            top_p=config.top_p,
-        )
-        text = response.output_text or ""
-        usage = response.usage or openai.types.responses.ResponseUsage(
-            input_tokens=0, output_tokens=0, total_tokens=0
-        )
-        input_tokens = usage.input_tokens
-        output_tokens = usage.output_tokens
-        finish_reason = getattr(response, "status", "unknown")
-    else:
-        # Chat Completions API (works with native + compatible providers)
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-        response = client.chat.completions.create(
-            model=config.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=config.max_tokens,
-            top_p=config.top_p,
-        )
-        text = response.choices[0].message.content or ""
-        usage = response.usage
-        input_tokens = usage.prompt_tokens if usage else 0
-        output_tokens = usage.completion_tokens if usage else 0
-        finish_reason = response.choices[0].finish_reason or "unknown"
+    try:
+        if use_responses_api and not config.base_url:
+            # Responses API only works with native OpenAI (no custom base_url)
+            response = client.responses.create(
+                model=config.model,
+                instructions=system,
+                input=user,
+                temperature=temperature,
+                max_output_tokens=config.max_tokens,
+                top_p=config.top_p,
+            )
+            text = response.output_text or ""
+            usage = response.usage or openai.types.responses.ResponseUsage(
+                input_tokens=0, output_tokens=0, total_tokens=0
+            )
+            input_tokens = usage.input_tokens
+            output_tokens = usage.output_tokens
+            finish_reason = getattr(response, "status", "unknown")
+        else:
+            # Chat Completions API (works with native + compatible providers)
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+            response = client.chat.completions.create(
+                model=config.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=config.max_tokens,
+                top_p=config.top_p,
+            )
+            text = response.choices[0].message.content or ""
+            usage = response.usage
+            input_tokens = usage.prompt_tokens if usage else 0
+            output_tokens = usage.completion_tokens if usage else 0
+            finish_reason = response.choices[0].finish_reason or "unknown"
+    except openai.APIError as e:
+        raise LLMError(f"OpenAI API error: {e}") from e
 
     elapsed = (time.perf_counter() - t0) * 1000
 
@@ -214,14 +241,13 @@ def call_llm(
 
     provider = config.provider
 
-    if provider in ("anthropic", "anthropic-compatible"):
-        # Temporarily override model/temperature for the call
-        saved_model = config.model
-        if config.model != config.model:  # false — just preserving pattern
-            pass
-        return _call_anthropic(config, system, user, temp)
-    elif provider in ("openai", "openai-compatible"):
-        return _call_openai(config, system, user, temp, use_responses_api)
-    else:
-        raise LLMError(f"Unknown provider: {provider}. "
-                       f"Expected: anthropic, anthropic-compatible, openai, openai-compatible")
+    def _do_call() -> LLMResponse:
+        if provider in ("anthropic", "anthropic-compatible"):
+            return _call_anthropic(config, system, user, temp)
+        elif provider in ("openai", "openai-compatible"):
+            return _call_openai(config, system, user, temp, use_responses_api)
+        else:
+            raise LLMError(f"Unknown provider: {provider}. "
+                           f"Expected: anthropic, anthropic-compatible, openai, openai-compatible")
+
+    return _retry_call(_do_call)

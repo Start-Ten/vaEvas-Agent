@@ -1,12 +1,12 @@
 llm:
-  provider: anthropic-compatible
+  provider: openai-compatible
   model: deepseek-v4-flash
   temperature: 0.0
   repair_temperature: 0.3
   max_tokens: 4096
   top_p: 1.0
   timeout: 120
-  base_url: https://api.deepseek.com/anthropic
+  base_url: https://opencode.ai/zen/go/v1
   api_key_env: ''
 paths:
   veriloga_skills: ../veriloga-skills

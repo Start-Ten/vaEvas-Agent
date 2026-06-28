@@ -101,6 +101,18 @@ class Doctor:
 
     # ─── Individual checks ────────────────────────────────────
 
+    def _read_base_url_from_config(self) -> str:
+        """Read base_url from the agent config YAML as a fallback."""
+        try:
+            import yaml
+            config_path = self.config.config_path or Path("config/default.yaml")
+            if config_path.exists():
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                return (raw or {}).get("llm", {}).get("base_url", "") or ""
+        except Exception:
+            pass
+        return ""
+
     def _check_python_version(self) -> CheckResult:
         vi = sys.version_info
         ok = vi >= (3, 11)
@@ -245,13 +257,16 @@ class Doctor:
                 required=False,
             )
 
+        # Try to read base_url from config file as fallback
+        config_base_url = self._read_base_url_from_config()
+
         if anthropic_key:
             try:
                 import anthropic
 
                 # Use configured model + base_url if available
                 model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-                base_url = os.environ.get("ANTHROPIC_BASE_URL")
+                base_url = os.environ.get("ANTHROPIC_BASE_URL") or config_base_url
                 kwargs = {"api_key": anthropic_key}
                 if base_url:
                     kwargs["base_url"] = base_url
@@ -276,7 +291,11 @@ class Doctor:
         if openai_key:
             try:
                 import openai
-                client = openai.OpenAI(api_key=openai_key)
+                base_url = os.environ.get("OPENAI_BASE_URL") or config_base_url
+                kwargs = {"api_key": openai_key}
+                if base_url:
+                    kwargs["base_url"] = base_url
+                client = openai.OpenAI(**kwargs)
                 client.models.list()
                 return CheckResult(
                     name="LLM connectivity", status="pass",

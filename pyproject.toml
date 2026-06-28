@@ -28,3 +28,6 @@ vaevas-agent = "vaevas_agent.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vaevas_agent*"]
+
+[tool.uv.sources]
+evas-sim = { path = "../EVAS", editable = true }

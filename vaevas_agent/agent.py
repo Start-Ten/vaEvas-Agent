@@ -15,6 +15,7 @@ from .llm.client import LLMError, call_llm
 from .loop.controller import LoopController
 from .loop.state import LoopState, RoundResult, TaskContext
 from .prompts.pipeline import (
+    _resolve_gold_path,
     build_repair_prompt,
     build_system_prompt,
     build_task_prompt,
@@ -131,8 +132,20 @@ class Agent:
             }
 
         self._total_tokens += response.input_tokens + response.output_tokens
+
+        # Guard: empty LLM response or no code blocks → short-circuit
+        text = (response.text or "").strip()
+        if not text or not _has_va_or_scs_blocks(text):
+            return {
+                "response_text": "",
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "elapsed_ms": response.elapsed_ms,
+                "error": "empty_response",
+            }
+
         return {
-            "response_text": response.text,
+            "response_text": text,
             "input_tokens": response.input_tokens,
             "output_tokens": response.output_tokens,
             "elapsed_ms": response.elapsed_ms,
@@ -206,12 +219,15 @@ def _build_task_context(task_id: str, task_dir: Path) -> TaskContext:
     meta_path = task_dir / "meta.json"
     meta = {}
     if meta_path.exists():
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            meta = {}
 
     family = meta.get("family", "end-to-end")
     category = meta.get("category", "unknown")
     required_axes = meta.get("scoring", ["dut_compile", "tb_compile", "sim_correct"])
-    gold_dir = task_dir / "gold" if (task_dir / "gold").exists() else None
+    gold_dir = _resolve_gold_path(task_dir)
 
     return TaskContext(
         task_id=task_id,
@@ -306,3 +322,16 @@ def _run_evas_score(sample_dir: Path, context: TaskContext) -> dict:
                           "sim_correct": 0.0, "weighted_total": 0.0},
                 "evas_notes": ["evas timeout"],
             }
+        except FileNotFoundError:
+            return {
+                "status": "FAIL_INFRA",
+                "scores": {"dut_compile": 0.0, "tb_compile": 0.0,
+                          "sim_correct": 0.0, "weighted_total": 0.0},
+                "evas_notes": ["evas CLI not found"],
+            }
+
+
+def _has_va_or_scs_blocks(text: str) -> bool:
+    """Check whether *text* contains at least one fenced code block for Verilog-A or Spectre."""
+    import re
+    return bool(re.search(r"```(?:verilog-a|verilog|spectre|sp)\s*\n", text, re.IGNORECASE))

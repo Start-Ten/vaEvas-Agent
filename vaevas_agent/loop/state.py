@@ -68,12 +68,18 @@ class LoopState:
 
 
 def _result_rank(r: RoundResult) -> tuple:
+    def _safe_float(v: object, default: float = 0.0) -> float:
+        try:
+            return float(v)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            return default
+
     return (
         1 if r.status == "PASS" else 0,
-        float(r.scores.get("weighted_total", 0.0)),
-        float(r.scores.get("sim_correct", 0.0)),
-        float(r.scores.get("tb_compile", 0.0)),
-        float(r.scores.get("dut_compile", 0.0)),
+        _safe_float(r.scores.get("weighted_total", 0.0)),
+        _safe_float(r.scores.get("sim_correct", 0.0)),
+        _safe_float(r.scores.get("tb_compile", 0.0)),
+        _safe_float(r.scores.get("dut_compile", 0.0)),
     )
 
 
